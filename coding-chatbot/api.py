@@ -1,22 +1,6 @@
 #!/usr/bin/env python3
 """
-api.py
-
-FastAPI wrapper around the orchestrator, so the whole agentic pipeline
-(generate code -> generate tests -> run tests -> retry up to 3x on
-failure) is available over HTTP.
-
-Run it:
-    pip install fastapi uvicorn --break-system-packages
-    uvicorn api:app --reload --port 8000
-
-Then call it:
-    curl -X POST http://localhost:8000/solve \\
-        -H "Content-Type: application/json" \\
-        -d '{"problem": "Write a function to check if a number is prime, in Python"}'
-
-Docs (interactive):
-    http://localhost:8000/docs
+FastAPI wrapper around the LangGraph coding orchestrator.
 """
 
 from typing import List, Optional
@@ -29,26 +13,33 @@ from graph_orchestrator import orchestrate, MAX_ATTEMPTS
 app = FastAPI(
     title="Agentic Code Generation & Testing API",
     description=(
-        "Given a problem statement, an orchestrator coordinates a coding "
-        "agent and a test-generation agent, runs the tests, and retries "
-        f"(regenerating the code) up to {MAX_ATTEMPTS} times if tests fail."
+        "Generates or debugs code, creates tests, executes them, "
+        f"and retries up to {MAX_ATTEMPTS} times."
     ),
-    version="1.0.0",
+    version="1.1.0",
 )
 
+
+# ---------------------------------------------------------------------
+# Request Models
+# ---------------------------------------------------------------------
 
 class SolveRequest(BaseModel):
     problem: str = Field(
         ...,
         description=(
-            "Either a problem statement to generate code for, OR your own "
-            "code (with or without an explanation) that you want checked, "
-            "debugged, and tested. The orchestrator detects which one this "
-            "is automatically."
+            "Either a programming problem or existing code to debug."
         ),
     )
-    model: str = Field("gpt-4o-mini", description="The OpenAI model to use.")
+    model: str = Field(
+        default="gpt-4o-mini",
+        description="OpenAI model to use.",
+    )
 
+
+# ---------------------------------------------------------------------
+# Response Models
+# ---------------------------------------------------------------------
 
 class AttemptResult(BaseModel):
     attempt: int
@@ -60,14 +51,24 @@ class AttemptResult(BaseModel):
 class SolveResponse(BaseModel):
     intent: str
     success: bool
+
+    # Populated for blocked/non-coding requests
+    response: Optional[str] = None
+
     attempts_used: int
     max_attempts: int
+
     language: str
     final_code: str
     test_code: str
     test_explanation: str
+
     attempts: List[AttemptResult]
 
+
+# ---------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------
 
 @app.get("/health")
 def health():
@@ -76,22 +77,37 @@ def health():
 
 @app.post("/solve", response_model=SolveResponse)
 def solve(req: SolveRequest):
+
     if not req.problem.strip():
-        raise HTTPException(status_code=400, detail="`problem` cannot be empty.")
+        raise HTTPException(
+            status_code=400,
+            detail="`problem` cannot be empty.",
+        )
 
     try:
         result = orchestrate(req.problem, req.model)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        )
 
     return SolveResponse(
-        intent=result["intent"],
-        success=result["success"],
-        attempts_used=result["attempts_used"],
+        intent=result.get("intent", ""),
+        success=result.get("success", False),
+
+        response=result.get("response"),
+
+        attempts_used=result.get("attempts_used", 0),
         max_attempts=MAX_ATTEMPTS,
-        language=result["language"],
-        final_code=result["final_code"],
-        test_code=result["test_code"],
+
+        language=result.get("language", ""),
+        final_code=result.get("final_code", ""),
+        test_code=result.get("test_code", ""),
         test_explanation=result.get("test_explanation", ""),
-        attempts=result["attempts"],
+
+        attempts=[
+            AttemptResult(**attempt)
+            for attempt in result.get("attempts", [])
+        ],
     )

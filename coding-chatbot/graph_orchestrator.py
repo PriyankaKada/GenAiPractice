@@ -1,34 +1,41 @@
 """
-graph_orchestrator.py
-
-The orchestrator, rebuilt as a LangGraph StateGraph.
-
-Graph shape:
-
-    detect_intent
-         |
-         +--(debug, has code)----------------+
-         |                                    |
-    generate_code                             |
-         |                                    |
-         +------------------------------------+
-                         |
-                    generate_tests
-                         |
-                      run_tests  <---------------+
-                         |                        |
-              (passed / unsupported / maxed out)  |
-                         |               (failed, attempts left)
-                        END                       |
-                                              fix_code
-                                                   |
-                                              run_tests (loop)
+                    detect_intent
+                          │
+           ┌──────────────┴──────────────┐
+           │                             │
+      non_coding                    guardrails
+           │                             │
+           │                    ┌────────┴────────┐
+           │                    │                 │
+           │                unsafe            safe
+           │                    │                 │
+           │                blocked      ┌────────┴────────┐
+           │                             │                 │
+           │                          generate        debug
+           │                             │                 │
+           │                       generate_code   generate_tests
+           │                             │                 │
+           │                             └─────────┬───────┘
+           │                                       │
+           │                                  generate_tests
+           │                                       │
+           │                                   run_tests
+           │                                       │
+           │                          ┌────────────┴────────────┐
+           │                          │                         │
+           │                       success                  failure
+           │                          │                         │
+           │                         END                  fix_code
+           │                                                    │
+           └────────────────────────────────────────────────────┘
+                                        │
+                                    run_tests
 
 MAX_ATTEMPTS bounds the run_tests <-> fix_code loop at 3 total attempts.
 """
 
 from pathlib import Path
-from typing import Optional, TypedDict, List
+from typing import Literal, Optional, TypedDict, List
 
 from langgraph.graph import StateGraph, END
 
@@ -52,7 +59,10 @@ class GraphState(TypedDict):
     user_input: str
     model: str
 
-    intent: str
+    intent: Literal["generate", "debug", "non_coding"]
+    safety_status: Literal["safe", "unsafe"]
+    safety_reason: str
+
     problem_statement: str
     language: str
     code: str
@@ -64,27 +74,67 @@ class GraphState(TypedDict):
     passed: Optional[bool]
     output: str
     attempts_log: List[AttemptRecord]
+    final_response: str
 
 
 # --- Nodes -----------------------------------------------------
 
 def node_detect_intent(state: GraphState) -> dict:
-    result = agents.detect_intent(state["user_input"], state["model"])
-    update = {
+    result = agents.detect_intent(
+        state["user_input"],
+        state["model"],
+    )
+
+    return {
         "intent": result.intent,
         "problem_statement": result.problem_statement,
         "language": result.language,
+        "code": result.code,
     }
-    if result.intent == "debug" and result.code.strip():
-        update["code"] = result.code
-    else:
-        update["intent"] = "generate"  # normalize: no usable code was given
-    return update
+
 
 
 def route_after_intent(state: GraphState) -> str:
-    return "generate_tests" if state["intent"] == "debug" else "generate_code"
+    """
+    Route based on whether the request is a coding request.
 
+    - non_coding -> end the flow with a polite response.
+    - generate/debug -> send to the guardrails node for safety validation.
+    """
+    if state["intent"] == "non_coding":
+        return "non_coding"
+
+    # All coding requests (generate & debug) go through guardrails first.
+    return "guardrails"
+
+def route_after_guardrails(state: GraphState) -> str:
+    """
+    Route after safety validation.
+
+    - unsafe -> blocked
+    - safe + debug -> generate_tests
+    - safe + generate -> generate_code
+    """
+    if state["safety_status"] == "unsafe":
+        return "blocked"
+
+    if state["intent"] == "debug":
+        return "generate_tests"
+
+    return "generate_code"
+
+
+def node_non_coding(state: GraphState):
+
+    return {
+        "final_response":
+            (
+                "I'm a coding assistant. "
+                "I can help with programming, debugging, "
+                "algorithms, APIs, system design, and software engineering. "
+                "I can't answer non-programming requests."
+            )
+    }
 
 def node_generate_code(state: GraphState) -> dict:
     result = agents.generate_code(state["problem_statement"], state["model"])
@@ -141,7 +191,12 @@ def node_fix_code(state: GraphState) -> dict:
 def build_graph():
     graph = StateGraph(GraphState)
 
+    # Register nodes
     graph.add_node("detect_intent", node_detect_intent)
+    graph.add_node("guardrails", node_guardrails)
+    graph.add_node("blocked", node_blocked)
+    graph.add_node("non_coding", node_non_coding)
+
     graph.add_node("generate_code", node_generate_code)
     graph.add_node("generate_tests", node_generate_tests)
     graph.add_node("run_tests", node_run_tests)
@@ -149,24 +204,81 @@ def build_graph():
 
     graph.set_entry_point("detect_intent")
 
+    # Intent routing
     graph.add_conditional_edges(
-        "detect_intent", route_after_intent,
-        {"generate_code": "generate_code", "generate_tests": "generate_tests"},
+        "detect_intent",
+        route_after_intent,
+        {
+            "non_coding": "non_coding",
+            "guardrails": "guardrails",
+        },
     )
+
+    # Safety routing
+    graph.add_conditional_edges(
+        "guardrails",
+        route_after_guardrails,
+        {
+            "blocked": "blocked",
+            "generate_code": "generate_code",
+            "generate_tests": "generate_tests",
+        },
+    )
+
+    # Main coding flow
     graph.add_edge("generate_code", "generate_tests")
     graph.add_edge("generate_tests", "run_tests")
 
     graph.add_conditional_edges(
-        "run_tests", route_after_tests,
-        {"end": END, "fix_code": "fix_code"},
+        "run_tests",
+        route_after_tests,
+        {
+            "fix_code": "fix_code",
+            "end": END,
+        },
     )
+
     graph.add_edge("fix_code", "run_tests")
+
+    # Terminal nodes
+    graph.add_edge("blocked", END)
+    graph.add_edge("non_coding", END)
 
     return graph.compile()
 
 
-_compiled_graph = None
 
+def node_blocked(state: GraphState) -> dict:
+    """
+    Respond to unsafe coding requests.
+    """
+
+    return {
+        "final_response": (
+            "I can't assist with this request because it involves unsafe or "
+            "prohibited programming activities.\n\n"
+            f"Reason: {state['safety_reason']}"
+        )
+    }
+
+
+def node_guardrails(state: GraphState) -> dict:
+    """
+    Validate whether the coding request is safe before proceeding.
+    """
+
+    result = agents.check_guardrails(
+        user_input=state["user_input"],
+        model=state["model"],
+    )
+
+    return {
+        "safety_status": result.status,      # "safe" | "unsafe"
+        "safety_reason": result.reason,
+    }
+
+# Cache the compiled graph
+_compiled_graph = None
 
 def get_graph():
     global _compiled_graph
@@ -190,24 +302,46 @@ def get_mermaid():
 
 def orchestrate(user_input: str, model: str = "gpt-4o-mini") -> dict:
     graph = get_graph()
-    final_state = graph.invoke({
-        "user_input": user_input,
-        "model": model,
-        "attempt": 0,
-        "attempts_log": [],
-    })
+
+    final_state = graph.invoke(
+        {
+            "user_input": user_input,
+            "model": model,
+            "attempt": 0,
+            "attempts_log": [],
+        }
+    )
+
+    attempts = final_state.get("attempts_log", [])
+    final_code = attempts[-1]["code"] if attempts else final_state.get("code", "")
+
+    # Early exit for non-coding or blocked requests
+    if final_state.get("final_response"):
+        return {
+            "intent": final_state.get("intent", ""),
+            "success": False,
+            "response": final_state["final_response"],
+
+            "attempts_used": 0,
+            "language": "",
+            "final_code": "",
+            "test_code": "",
+            "test_explanation": "",
+            "attempts": [],
+        }
 
     return {
-        "intent": final_state["intent"],
-        "success": bool(final_state["passed"]),
-        "attempts_used": len(final_state["attempts_log"]),
-        "language": final_state["language"],
-        "final_code": final_state["attempts_log"][-1]["code"],
-        "test_code": final_state["test_code"],
-        "test_explanation": final_state.get("test_explanation", ""),
-        "attempts": final_state["attempts_log"],
-    }
+        "intent": final_state.get("intent", ""),
+        "success": bool(final_state.get("passed")),
+        "response": None,
 
+        "attempts_used": len(attempts),
+        "language": final_state.get("language", ""),
+        "final_code": final_code,
+        "test_code": final_state.get("test_code", ""),
+        "test_explanation": final_state.get("test_explanation", ""),
+        "attempts": attempts,
+    }
 
 if __name__ == "__main__":
     import sys

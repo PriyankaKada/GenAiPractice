@@ -9,31 +9,55 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+from typing import Literal
+from pydantic import BaseModel, Field
+
+
 class IntentResult(BaseModel):
     """Output of the intent-detection agent."""
-    intent: Literal["generate", "debug"] = Field(
+
+    intent: Literal["generate", "debug", "non_coding"] = Field(
         description=(
-            "'generate' if the user described a problem and wants NEW code "
-            "written. 'debug' if the user pasted their own existing code "
-            "and wants it reviewed, explained, fixed, or tested - this "
-            "includes questions like 'what's wrong with this' or 'review "
-            "my code', even without the word 'fix'."
+            "'generate' if the user wants new code to be written. "
+            "'debug' if the user provides existing code and wants it "
+            "reviewed, explained, fixed, optimized, or tested. "
+            "'non_coding' if the request is unrelated to software "
+            "development or programming."
         )
     )
+
     problem_statement: str = Field(
-        description="A clear, self-contained description of what the code "
-                    "should do, inferred from context if not stated explicitly."
-    )
-    code: str = Field(
         default="",
-        description="The user's original code verbatim, if intent is 'debug'. "
-                    "Empty string if intent is 'generate'."
-    )
-    language: str = Field(
-        description="The programming language, detected from the code or "
-                    "the user's wording. Default to 'Python' if unclear."
+        description=(
+            "A clear, self-contained programming problem. "
+            "Leave empty for non_coding requests."
+        ),
     )
 
+    code: str = Field(
+        default="",
+        description=(
+            "The user's original source code exactly as provided. "
+            "Only populated when intent is 'debug'."
+        ),
+    )
+
+    language: str = Field(
+        default="",
+        description=(
+            "Programming language of the request or supplied code. "
+            "Leave empty for non_coding requests."
+        ),
+    )
+
+    response: str = Field(
+        default="",
+        description=(
+            "Only populated when intent is 'non_coding'. "
+            "Contains a polite message explaining that the assistant "
+            "is a coding agent and cannot answer non-programming questions."
+        ),
+    )
 
 class CodeResult(BaseModel):
     """Output of the coding agent (both fresh generation and fixes)."""
@@ -46,3 +70,15 @@ class TestResult(BaseModel):
     """Output of the test-generation agent."""
     test_code: str = Field(description="The complete, runnable test suite.")
     explanation: str = Field(description="A short (2-4 sentence) explanation of test coverage.")
+
+
+class GuardrailResult(BaseModel):
+    """Output of the guardrail agent."""
+
+    status: Literal["safe", "unsafe"] = Field(
+        description="Whether the coding request is safe to execute."
+    )
+
+    reason: str = Field(
+        description="Short explanation for the safety decision."
+    )

@@ -13,7 +13,12 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from schemas import IntentResult, CodeResult, TestResult
+from schemas import (
+    IntentResult,
+    CodeResult,
+    TestResult,
+    GuardrailResult,
+)
 
 # --- API key setup -----------------------------------------------------
 
@@ -39,21 +44,57 @@ def get_llm(model: str, temperature: float = 0.2) -> ChatOpenAI:
 
 # --- System prompts -----------------------------------------------------
 
-INTENT_SYSTEM_PROMPT = """You classify a user's message for a coding \
-assistant pipeline. Decide which of two situations applies:
+INTENT_SYSTEM_PROMPT = """
+You are an intent classification agent for a coding assistant.
 
-- "generate": the user describes a problem and wants code written for it. \
-No existing code was provided (or only a trivial snippet that isn't \
-really "their" solution).
-- "debug": the user has pasted their own code and wants it reviewed, \
-explained, fixed, or tested. This applies even if they didn't explicitly \
-say "fix this" - e.g. "what's wrong with this", "why doesn't this work", \
-"review my code", or just pasting code with a question, all count as \
-"debug".
+Classify every user request into exactly one of these intents:
 
-Also extract a clear problem statement (inferred if needed), the user's \
-code verbatim (if intent is "debug", else empty), and the language.
+1. "generate"
+   - The user wants new code to be written.
+   - The user asks to implement an algorithm or data structure.
+   - The user asks programming concepts.
+   - The user asks about APIs, frameworks, databases, cloud, DevOps, system design, or software engineering.
+   - The user wants sample code or code generation.
+
+2. "debug"
+   - The user provides existing source code.
+   - The user asks to review, explain, optimize, fix, refactor, or test existing code.
+   - The user asks why their code is failing or behaving unexpectedly.
+   - The user wants help understanding or improving code they have written.
+
+3. "non_coding"
+   - The request is unrelated to software engineering or programming.
+   - Examples include:
+     - Recipes or cooking
+     - Travel planning
+     - Movies or entertainment
+     - Sports
+     - Politics
+     - General knowledge
+     - Medical advice
+     - Casual conversation
+     - Shopping recommendations
+     - Personal opinions unrelated to programming
+
+For every request:
+
+- Return exactly one intent.
+- If the intent is "generate" or "debug":
+    - Extract a clear, self-contained programming problem statement.
+    - Detect the programming language if one is mentioned or can be inferred.
+    - If intent is "debug", copy the user's code exactly into the code field.
+    - If intent is "generate", set code to an empty string.
+
+- If the intent is "non_coding":
+    - Set:
+        problem_statement = ""
+        code = ""
+        language = ""
+
+Do not answer the user's question.
+Only classify the request and populate the structured output.
 """
+
 
 CODE_SYSTEM_PROMPT = """You are a coding agent. Given a problem statement, \
 write a complete, correct, well-commented solution.
@@ -90,6 +131,55 @@ Import/require it accordingly instead of redefining it:
 Briefly explain what the test suite covers (2-4 sentences).
 """
 
+GUARDRAIL_SYSTEM_PROMPT = """
+You are the safety gate for a coding assistant.
+
+Your job is only to classify requests.
+
+Mark SAFE if the request is about legitimate software engineering,
+including:
+
+- programming
+- debugging
+- algorithms
+- data structures
+- APIs
+- system design
+- unit testing
+- code review
+- DevOps
+- cloud
+- databases
+- security education
+- vulnerability explanation
+- defensive security
+- penetration testing performed with authorization
+
+Mark UNSAFE if the request asks for code or instructions that facilitate:
+
+- malware
+- ransomware
+- viruses
+- worms
+- trojans
+- keyloggers
+- credential theft
+- phishing
+- bypassing authentication
+- SQL injection against real targets
+- unauthorized hacking
+- privilege escalation
+- DDoS attacks
+- data theft
+- destructive attacks
+- persistence mechanisms
+
+Return only:
+
+status: safe | unsafe
+
+reason: short explanation
+"""
 
 # --- Agent functions -----------------------------------------------------
 
@@ -100,6 +190,25 @@ def detect_intent(user_input: str, model: str = "gpt-4o-mini") -> IntentResult:
         HumanMessage(content=user_input),
     ])
 
+def check_guardrails(
+    user_input: str,
+    model: str = "gpt-4o-mini",
+) -> GuardrailResult:
+    """
+    Determine whether the coding request is safe.
+    """
+
+    llm = (
+        get_llm(model, temperature=0.0)
+        .with_structured_output(GuardrailResult)
+    )
+
+    return llm.invoke(
+        [
+            SystemMessage(content=GUARDRAIL_SYSTEM_PROMPT),
+            HumanMessage(content=user_input),
+        ]
+    )
 
 def generate_code(problem_prompt: str, model: str = "gpt-4o-mini",
                    feedback: str = None, test_code: str = None) -> CodeResult:
