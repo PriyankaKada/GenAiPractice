@@ -1,0 +1,24 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	detect_intent(detect_intent)
+	generate_code(generate_code)
+	generate_tests(generate_tests)
+	run_tests(run_tests)
+	fix_code(fix_code)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> detect_intent;
+	detect_intent -.-> generate_code;
+	detect_intent -.-> generate_tests;
+	fix_code --> run_tests;
+	generate_code --> generate_tests;
+	generate_tests --> run_tests;
+	run_tests -. &nbsp;end&nbsp; .-> __end__;
+	run_tests -.-> fix_code;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
