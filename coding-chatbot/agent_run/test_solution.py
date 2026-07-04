@@ -1,72 +1,19 @@
 import pytest
-from solution import TicTacToe
+from solution import fibonacci_series
 
-
-def test_initial_board():
-    game = TicTacToe()
-    assert game.board == [[' ', ' ', ' '], [' ', ' ', ' '], [' ', ' ', ' ']]
-
-
-def test_make_move_valid():
-    game = TicTacToe()
-    assert game.make_move(0, 0) is True
-    assert game.board[0][0] == 'X'
-
-
-def test_make_move_invalid():
-    game = TicTacToe()
-    game.make_move(0, 0)
-    assert game.make_move(0, 0) is False  # Trying to overwrite
-
-
-def test_check_winner_horizontal():
-    game = TicTacToe()
-    game.make_move(0, 0)
-    game.make_move(1, 0)
-    game.make_move(0, 1)
-    game.make_move(1, 1)
-    game.make_move(0, 2)
-    assert game.check_winner() == 'X'  # X wins horizontally
-
-
-def test_check_winner_vertical():
-    game = TicTacToe()
-    game.make_move(0, 0)
-    game.make_move(0, 1)
-    game.make_move(1, 0)
-    game.make_move(1, 1)
-    game.make_move(2, 0)
-    assert game.check_winner() == 'X'  # X wins vertically
-
-
-def test_check_winner_diagonal():
-    game = TicTacToe()
-    game.make_move(0, 0)
-    game.make_move(1, 1)
-    game.make_move(1, 0)
-    game.make_move(2, 1)
-    game.make_move(2, 2)
-    assert game.check_winner() == 'X'  # X wins diagonally
-
-
-def test_is_full():
-    game = TicTacToe()
-    for i in range(3):
-        for j in range(3):
-            game.make_move(i, j)
-    assert game.is_full() is True
-
-
-def test_is_not_full():
-    game = TicTacToe()
-    game.make_move(0, 0)
-    assert game.is_full() is False
-
-
-def test_switch_player():
-    game = TicTacToe()
-    assert game.current_player == 'X'
-    game.switch_player()
-    assert game.current_player == 'O'
-    game.switch_player()
-    assert game.current_player == 'X'
+def test_fibonacci_series():
+    # Test typical case
+    assert fibonacci_series(5) == [0, 1, 1, 2, 3]
+    # Test edge case: n = 0 (should return an empty list)
+    assert fibonacci_series(0) == []
+    # Test edge case: n = 1 (should return the first Fibonacci number)
+    assert fibonacci_series(1) == [0]
+    # Test edge case: n = 2 (should return the first two Fibonacci numbers)
+    assert fibonacci_series(2) == [0, 1]
+    # Test edge case: n = 3 (should return the first three Fibonacci numbers)
+    assert fibonacci_series(3) == [0, 1, 1]
+    # Test edge case: n = 10 (to check larger input)
+    assert fibonacci_series(10) == [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+    # Test invalid input: n = -5 (should ideally raise an error or return an empty list)
+    with pytest.raises(ValueError):
+        fibonacci_series(-5)

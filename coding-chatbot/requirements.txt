@@ -9,3 +9,4 @@ langchain-openai>=0.2.0
 langchain-core>=0.3.0
 langgraph>=0.2.0
 grandalf>=0.8
+gradio==5.38.2
